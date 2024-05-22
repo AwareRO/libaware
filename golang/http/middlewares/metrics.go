@@ -75,7 +75,7 @@ func (wrapper *durationMetricWrapper) Wrap(nextHandler httprouter.Handle) httpro
 
 		find := geoip.NewIPApiFinder()
 		loc, err := find(ip)
-		if err == nil || loc.Status != "success" {
+		if err == nil {
 			lat = fmt.Sprintf("%f", loc.Latitude)
 			lon = fmt.Sprintf("%f", loc.Longitude)
 			country = loc.Country

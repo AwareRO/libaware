@@ -1,6 +1,6 @@
 module github.com/AwareRO/libaware/golang
 
-go 1.21.8
+go 1.21
 
 require (
 	github.com/ilyakaznacheev/cleanenv v1.5.0

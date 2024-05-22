@@ -3,6 +3,7 @@ package geoip
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,6 +45,10 @@ func NewIPApiFinder() Find {
 		err = json.NewDecoder(response.Body).Decode(&loc)
 		if err != nil || loc.Status != ipAPISuccess {
 			logger.Err(err).Str("body", string(buf)).Msg("Failed to parse response")
+
+			if err == nil {
+				err = errors.New("ip-api error")
+			}
 
 			return nil, err
 		}

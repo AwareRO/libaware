@@ -13,3 +13,10 @@ func TestFindCloudflareIP(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, l.Isp, "Cloudflare")
 }
+
+func TestFindLocalhost(t *testing.T) {
+	find := NewIPApiFinder()
+	assert.NotNil(t, find)
+	_, err := find("127.0.0.1")
+	assert.Error(t, err)
+}

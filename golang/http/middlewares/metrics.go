@@ -178,6 +178,8 @@ func (wrapper *durationMetricWrapper) restoreMetrics() {
 }
 
 func (wrapper *durationMetricWrapper) restoreMetric(name string, metric *prometheus.CounterVec) {
+	logger := log.Error().Str("host", wrapper.prometheusHost)
+
 	resp, err := prometheusRequest(
 		wrapper.prometheusHost,
 		wrapper.prometheusUsername,
@@ -186,7 +188,7 @@ func (wrapper *durationMetricWrapper) restoreMetric(name string, metric *prometh
 		wrapper.app,
 	)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed prometheus.aware.ro request")
+		logger.Err(err).Msg("Failed prometheus request")
 		return
 	}
 
@@ -194,7 +196,7 @@ func (wrapper *durationMetricWrapper) restoreMetric(name string, metric *prometh
 
 	err = json.NewDecoder(resp).Decode(&r)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to decode prometheus.aware.ro response")
+		logger.Err(err).Msg("Failed to decode prometheus response")
 		resp.Close()
 
 		return

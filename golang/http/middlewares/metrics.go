@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AwareRO/libaware/golang/geoip"
+	"github.com/AwareRO/libaware/golang/http/handlers"
 	"github.com/AwareRO/libaware/golang/metrics"
 
 	"github.com/julienschmidt/httprouter"
@@ -34,26 +35,63 @@ func (r *statusRecorder) WriteHeader(statusCode int) {
 	r.ResponseWriter.WriteHeader(statusCode)
 }
 
-type ResetTick func(wrapper *durationMetricWrapper)
-
-type durationMetricWrapper struct {
-	Collector          metrics.Collector
-	durations          *prometheus.HistogramVec
-	dailyRequests      *prometheus.CounterVec
-	monthlyRequests    *prometheus.CounterVec
-	resetTick          ResetTick
+type durationMetricWrapperOpts struct {
 	app                string
 	prometheusHost     string
 	prometheusUsername string
 	prometheusPassword string
+	collector          metrics.Collector
 }
 
-func NewDefaultDurationMetricWrapper(conf MetricsConfig) *durationMetricWrapper {
-	return (&durationMetricWrapper{}).init(metrics.NewDefaultCollector(), conf)
+type durationMetricWrapperOptsFunc func(o *durationMetricWrapperOpts)
+
+type durationMetricWrapper struct {
+	durations       *prometheus.HistogramVec
+	dailyRequests   *prometheus.CounterVec
+	monthlyRequests *prometheus.CounterVec
+	opts            durationMetricWrapperOpts
 }
 
-func NewDurationMetricWrapper(collector metrics.Collector, conf MetricsConfig) *durationMetricWrapper {
-	return (&durationMetricWrapper{}).init(collector, conf)
+func defaultMetricOpts() durationMetricWrapperOpts {
+	return durationMetricWrapperOpts{
+		collector: metrics.NewDefaultCollector(),
+	}
+}
+
+func NewDurationMetricWrapper(opts ...durationMetricWrapperOptsFunc) *durationMetricWrapper {
+	wrapper := &durationMetricWrapper{
+		opts: defaultMetricOpts(),
+	}
+
+	for _, fn := range opts {
+		fn(&wrapper.opts)
+	}
+
+	wrapper.initializeMetrics()
+	wrapper.registerMetrics()
+	wrapper.restoreMetrics()
+	go wrapper.resetThread()
+
+	return wrapper
+}
+
+func WithMetricsConf(conf MetricsConfig) durationMetricWrapperOptsFunc {
+	return func(o *durationMetricWrapperOpts) {
+		o.app = conf.App
+		o.prometheusHost = conf.PrometheusHost
+		o.prometheusUsername = conf.PrometheusUsername
+		o.prometheusPassword = conf.PrometheusPassword
+	}
+}
+
+func (wrapper *durationMetricWrapper) MetricsHandler() httprouter.Handle {
+	return handlers.FromStdlib(wrapper.opts.collector.GetHttpHandler())
+}
+
+func WithCollector(c metrics.Collector) durationMetricWrapperOptsFunc {
+	return func(o *durationMetricWrapperOpts) {
+		o.collector = c
+	}
 }
 
 func (wrapper *durationMetricWrapper) Wrap(nextHandler httprouter.Handle) httprouter.Handle {
@@ -84,48 +122,29 @@ func (wrapper *durationMetricWrapper) Wrap(nextHandler httprouter.Handle) httpro
 		}
 
 		wrapper.durations.
-			WithLabelValues(wrapper.app, endpoint, method, status).Observe(float64(elapsed.Milliseconds()))
+			WithLabelValues(wrapper.opts.app, endpoint, method, status).Observe(float64(elapsed.Milliseconds()))
 		wrapper.dailyRequests.
-			WithLabelValues(wrapper.app, endpoint, method, status, ip, lat, lon, country, crawler).Inc()
+			WithLabelValues(wrapper.opts.app, endpoint, method, status, ip, lat, lon, country, crawler).Inc()
 		wrapper.monthlyRequests.
-			WithLabelValues(wrapper.app, endpoint, method, status, ip, lat, lon, country, crawler).Inc()
+			WithLabelValues(wrapper.opts.app, endpoint, method, status, ip, lat, lon, country, crawler).Inc()
 	}
 }
 
-func (wrapper *durationMetricWrapper) init(collector metrics.Collector, conf MetricsConfig) *durationMetricWrapper {
-	wrapper.resetTick = defaultTick
-	wrapper.app = conf.App
-	wrapper.prometheusHost = conf.PrometheusHost
-	wrapper.prometheusUsername = conf.PrometheusUsername
-	wrapper.prometheusPassword = conf.PrometheusPassword
-	wrapper.initializeMetrics()
-	wrapper.Collector = collector
-	wrapper.registerMetrics()
-	wrapper.restoreMetrics()
-
-	go func() {
-		logger := log.Info().Str("goroutine", "http metrics ticker")
-		for {
-			now := time.Now()
-			nextWait := time.Until(time.Date(
-				now.Year(), now.Month(), now.Day(),
-				0, 0, 0, 0,
-				now.Location(),
-			).AddDate(0, 0, 1))
-			logger.Msg(fmt.Sprintf("Sleeping %v", nextWait))
-			time.Sleep(nextWait)
-			logger.Msg("reseting counters")
-			wrapper.resetTick(wrapper)
+func (wrapper *durationMetricWrapper) resetThread() {
+	for {
+		now := time.Now()
+		nextWait := time.Until(time.Date(
+			now.Year(), now.Month(), now.Day(),
+			0, 0, 0, 0,
+			now.Location(),
+		).AddDate(0, 0, 1))
+		log.Info().Msg(fmt.Sprintf("Sleeping %v", nextWait))
+		time.Sleep(nextWait)
+		log.Info().Msg("reseting counters")
+		wrapper.dailyRequests.Reset()
+		if time.Now().Day() == 1 {
+			wrapper.monthlyRequests.Reset()
 		}
-	}()
-
-	return wrapper
-}
-
-func defaultTick(wrapper *durationMetricWrapper) {
-	wrapper.dailyRequests.Reset()
-	if time.Now().Day() == 1 {
-		wrapper.monthlyRequests.Reset()
 	}
 }
 
@@ -158,15 +177,15 @@ func (wrapper *durationMetricWrapper) initializeMetrics() {
 }
 
 func (wrapper *durationMetricWrapper) registerMetrics() {
-	wrapper.Collector.RegisterMetric(wrapper.durations)
+	wrapper.opts.collector.RegisterMetric(wrapper.durations)
 	log.Info().Str("name", "http_server_request_duration_milliseconds").
 		Str("type", "histogram_vec").
 		Msg("registered new metric")
-	wrapper.Collector.RegisterMetric(wrapper.dailyRequests)
+	wrapper.opts.collector.RegisterMetric(wrapper.dailyRequests)
 	log.Info().Str("name", "http_server_request_count_daily").
 		Str("type", "counter_vec").
 		Msg("registered new metric")
-	wrapper.Collector.RegisterMetric(wrapper.monthlyRequests)
+	wrapper.opts.collector.RegisterMetric(wrapper.monthlyRequests)
 	log.Info().Str("name", "http_server_request_count_monthly").
 		Str("type", "counter_vec").
 		Msg("registered new metric")
@@ -178,14 +197,14 @@ func (wrapper *durationMetricWrapper) restoreMetrics() {
 }
 
 func (wrapper *durationMetricWrapper) restoreMetric(name string, metric *prometheus.CounterVec) {
-	logger := log.Error().Str("host", wrapper.prometheusHost)
+	logger := log.Error().Str("host", wrapper.opts.prometheusHost)
 
 	resp, err := prometheusRequest(
-		wrapper.prometheusHost,
-		wrapper.prometheusUsername,
-		wrapper.prometheusPassword,
+		wrapper.opts.prometheusHost,
+		wrapper.opts.prometheusUsername,
+		wrapper.opts.prometheusPassword,
 		name,
-		wrapper.app,
+		wrapper.opts.app,
 	)
 	if err != nil {
 		logger.Err(err).Msg("Failed prometheus request")
@@ -206,7 +225,7 @@ func (wrapper *durationMetricWrapper) restoreMetric(name string, metric *prometh
 
 	for _, m := range r.Data.Result {
 		value, _ := strconv.ParseInt(m.Value[1].(string), 10, 32)
-		metric.WithLabelValues(wrapper.app,
+		metric.WithLabelValues(wrapper.opts.app,
 			m.Metric.Endpoint, m.Metric.Method, m.Metric.Status,
 			m.Metric.IP, m.Metric.Latitude, m.Metric.Longitude, m.Metric.Country, m.Metric.Crawler,
 		).Add(float64(value))

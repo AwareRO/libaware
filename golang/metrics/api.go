@@ -9,7 +9,4 @@ import (
 type Collector interface {
 	GetHttpHandler() http.Handler
 	RegisterMetric(metric prometheus.Collector)
-	Start()
-	// todo: add stop
-	WithPrefix(prefix string) Collector
 }

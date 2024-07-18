@@ -7,3 +7,8 @@ import (
 type Wrapper interface {
 	Wrap(nextHandler httprouter.Handle) httprouter.Handle
 }
+
+type MetricsWrapper interface {
+	Wrapper
+	MetricsHandler() httprouter.Handle
+}
